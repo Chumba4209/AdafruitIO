@@ -1,0 +1,153 @@
+#include <ESP8266WiFi.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_BMP085.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+#include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
+
+// BMP180 sensor setup
+Adafruit_BMP085 bmp;
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// WiFi Manager parameters
+char aio_username[50] = "";
+char aio_key[50] = "";
+char temp_topic[100];
+char pressure_topic[100];
+
+WiFiClient client;
+Adafruit_MQTT_Client* mqtt;
+Adafruit_MQTT_Publish* Temperature;
+Adafruit_MQTT_Publish* Pressure;
+
+float temp;
+float pressure;
+
+void setup() {
+  Serial.begin(115200);
+
+  if (!bmp.begin()) {
+    Serial.println(F("Could not find a valid BMP085 sensor, check wiring!"));
+    while (1) {}
+  }
+
+  // Initialize the OLED display
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  delay(2000);
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+
+  // Show Booting message
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Booting...");
+  display.println("1. Open BMP180Config");
+  display.println("   on WiFi portal");
+  display.println("2. Edit WiFi & MQTT");
+  display.println("   credentials");
+  display.println("3. Save");
+  display.display();
+  
+  // WiFiManager
+  WiFiManager wm;
+  WiFiManagerParameter custom_username("aio_user", "Adafruit IO Username", aio_username, 50);
+  WiFiManagerParameter custom_key("aio_key", "Adafruit IO Key", aio_key, 50);
+
+  wm.addParameter(&custom_username);
+  wm.addParameter(&custom_key);
+
+  // Open config portal every boot
+  wm.setConfigPortalTimeout(180); // 3 minutes timeout
+  wm.startConfigPortal("BMP180_Config");
+
+  // After WiFiManager finishes, copy the custom parameters
+  strcpy(aio_username, custom_username.getValue());
+  strcpy(aio_key, custom_key.getValue());
+
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.println("Adafruit IO Username: " + String(aio_username));
+  Serial.println("Adafruit IO Key: " + String(aio_key));
+
+  // Build the MQTT topics safely
+  sprintf(temp_topic, "%s/feeds/BMP_Temperature", aio_username);
+  sprintf(pressure_topic, "%s/feeds/BMP_Pressure", aio_username);
+
+  // Setup MQTT
+  mqtt = new Adafruit_MQTT_Client(&client, "io.adafruit.com", 1883, aio_username, aio_key);
+  Temperature = new Adafruit_MQTT_Publish(mqtt, temp_topic);
+  Pressure = new Adafruit_MQTT_Publish(mqtt, pressure_topic);
+
+  connect();
+}
+
+void connect() {
+  Serial.print(F("Connecting to Adafruit IO... "));
+  int8_t ret;
+  while ((ret = mqtt->connect()) != 0) {
+    switch (ret) {
+      case 1: Serial.println(F("Wrong protocol")); break;
+      case 2: Serial.println(F("ID rejected")); break;
+      case 3: Serial.println(F("Server unavailable")); break;
+      case 4: Serial.println(F("Bad user/pass")); break;
+      case 5: Serial.println(F("Not authorized")); break;
+      default: Serial.println(F("Connection failed")); break;
+    }
+
+    if (ret >= 0)
+      mqtt->disconnect();
+
+    Serial.println(F("Retrying connection in 10 seconds..."));
+    delay(10000);
+  }
+  Serial.println(F("Adafruit IO Connected!"));
+}
+
+void loop() {
+  if (!mqtt->ping(3)) {
+    if (!mqtt->connected())
+      connect();
+  }
+
+  temp = bmp.readTemperature();
+  pressure = bmp.readPressure() / 100.0F;
+
+  Serial.print("Temperature = ");
+  Serial.println(temp);
+  Serial.print("Pressure = ");
+  Serial.println(pressure);
+
+  if (!Temperature->publish(temp)) {
+    Serial.println(F("Failed to publish temperature"));
+  } 
+  if (!Pressure->publish(pressure)) {
+    Serial.println(F("Failed to publish pressure"));
+  } else {
+    Serial.println(F("Published successfully!"));
+  }
+
+  // Display Temperature and Pressure readings
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(6, 7);
+  display.print("BMP180");
+  display.setTextSize(1);
+  display.setCursor(5, 20);
+  display.print("Temp: " + String(temp));
+  display.print((char)247);  // Degree symbol
+  display.print("C");
+  display.setTextSize(1);
+  display.setCursor(5, 40);
+  display.print("Pres: " + String(pressure) + " hPa");
+
+  display.display();
+
+  delay(5000); // Wait 5 seconds between readings
+}
